@@ -1099,9 +1099,6 @@ var _Sources = (() => {
     }
     return `${current}; ${nextCookie}`;
   };
-  var sleep = async (ms) => {
-    await new Promise((resolve) => setTimeout(resolve, ms));
-  };
   var parseSearch = (rows, filters = {}) => {
     const collectedIds = [];
     const searchResults = [];
@@ -1135,7 +1132,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.1",
+    version: "3.2.2",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1254,7 +1251,6 @@ var _Sources = (() => {
       if (payload?.errors?.length) {
         if (retries > 0 && this.shouldRetryGraphQLError(payload.errors)) {
           await this.refreshAPIKey();
-          await sleep(750);
           return await this.executeGraphQL(query, retries - 1);
         }
         throw new Error(this.getGraphQLErrorMessage(payload.errors));
