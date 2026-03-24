@@ -945,7 +945,7 @@ var _Sources = (() => {
       const title = chapter.title ? chapter.title : "Chapter " + number;
       const date = new Date(chapter.date);
       chapters.push(App.createChapter({
-        id: String(chapter.slug ?? number),
+        id: String(number),
         name: title,
         langCode: "\u{1F1EC}\u{1F1E7}",
         chapNum: number,
@@ -1100,16 +1100,29 @@ var _Sources = (() => {
     return `${current}; ${nextCookie}`;
   };
   var extractChapterImageUrls = (value) => {
-    const source = String(value ?? "");
+    const source = String(value ?? "").replace(/\\u002F/gi, "/").replace(/\\\//g, "/").replace(/&amp;/g, "&");
     if (!source) return [];
-    const matches = source.match(/(?:https?:)?\\?\/\\?\/imgx\.mghcdn\.com\\?\/[^"'\\s<)]+/gi) ?? [];
     const pages = [];
     const seen = /* @__PURE__ */ new Set();
-    for (const match of matches) {
-      const normalized = match.replace(/\\\//g, "/").replace(/^\/\//, "https://").replace(/^http:\/\//i, "https://").replace(/&amp;/g, "&");
-      if (!/^https:\/\/imgx\.mghcdn\.com\//i.test(normalized) || seen.has(normalized)) continue;
-      seen.add(normalized);
-      pages.push(normalized);
+    const prefixes = ["https://imgx.mghcdn.com/", "http://imgx.mghcdn.com/", "//imgx.mghcdn.com/"];
+    const delimiters = ['"', "'", "<", ">", " ", "\n", "\r", "\t", ")", "\\"];
+    for (const prefix of prefixes) {
+      let index = source.indexOf(prefix);
+      while (index !== -1) {
+        let end = source.length;
+        for (const delimiter of delimiters) {
+          const delimiterIndex = source.indexOf(delimiter, index);
+          if (delimiterIndex !== -1 && delimiterIndex < end) {
+            end = delimiterIndex;
+          }
+        }
+        const candidate = source.slice(index, end).replace(/^\/\//, "https://").replace(/^http:\/\//i, "https://");
+        if (/^https:\/\/imgx\.mghcdn\.com\//i.test(candidate) && !seen.has(candidate)) {
+          seen.add(candidate);
+          pages.push(candidate);
+        }
+        index = source.indexOf(prefix, index + prefix.length);
+      }
     }
     return pages;
   };
@@ -1146,7 +1159,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.3",
+    version: "3.2.4",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1345,8 +1358,10 @@ var _Sources = (() => {
       return parseChapters(data.manga.chapters, mangaId);
     }
     async getChapterDetails(mangaId, chapterId) {
-      const chapterPath = String(chapterId).startsWith("chapter-") ? String(chapterId) : `chapter-${chapterId}`;
-      const chapterNumber = Number(String(chapterId).replace(/^chapter-/i, ""));
+      const rawChapterId = String(chapterId).trim();
+      const chapterNumberMatch = /(\d+(?:\.\d+)?)/.exec(rawChapterId);
+      const chapterNumber = Number(chapterNumberMatch?.[1] ?? rawChapterId.replace(/^chapter-/i, ""));
+      const chapterPath = !Number.isNaN(chapterNumber) ? `chapter-${chapterNumber}` : rawChapterId.startsWith("chapter-") ? rawChapterId : `chapter-${rawChapterId}`;
       const chapterUrl = `${MH_DOMAIN}/chapter/${encodeURIComponent(mangaId)}/${chapterPath}`;
       let response = await this.requestManager.schedule(App.createRequest({
         url: chapterUrl,
