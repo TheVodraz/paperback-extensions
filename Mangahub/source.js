@@ -945,7 +945,7 @@ var _Sources = (() => {
       const title = chapter.title ? chapter.title : "Chapter " + number;
       const date = new Date(chapter.date);
       chapters.push(App.createChapter({
-        id: String(number),
+        id: String(chapter.slug ?? number),
         name: title,
         langCode: "\u{1F1EC}\u{1F1E7}",
         chapNum: number,
@@ -1099,6 +1099,20 @@ var _Sources = (() => {
     }
     return `${current}; ${nextCookie}`;
   };
+  var extractChapterImageUrls = (value) => {
+    const source = String(value ?? "");
+    if (!source) return [];
+    const matches = source.match(/(?:https?:)?\\?\/\\?\/imgx\.mghcdn\.com\\?\/[^"'\\s<)]+/gi) ?? [];
+    const pages = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const match of matches) {
+      const normalized = match.replace(/\\\//g, "/").replace(/^\/\//, "https://").replace(/^http:\/\//i, "https://").replace(/&amp;/g, "&");
+      if (!/^https:\/\/imgx\.mghcdn\.com\//i.test(normalized) || seen.has(normalized)) continue;
+      seen.add(normalized);
+      pages.push(normalized);
+    }
+    return pages;
+  };
   var parseSearch = (rows, filters = {}) => {
     const collectedIds = [];
     const searchResults = [];
@@ -1132,7 +1146,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.2",
+    version: "3.2.3",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1150,7 +1164,6 @@ var _Sources = (() => {
   };
   var Mangahub = class {
     constructor() {
-      this.chapterRequestsSinceRefresh = 0;
       this.stateManager = App.createSourceStateManager();
       this.getMhubAccess = async () => {
         return extractMhubAccess(await this.stateManager.retrieve("mhub_key"));
@@ -1332,28 +1345,52 @@ var _Sources = (() => {
       return parseChapters(data.manga.chapters, mangaId);
     }
     async getChapterDetails(mangaId, chapterId) {
-      if (!await this.getMhubAccess() || this.chapterRequestsSinceRefresh >= 4) {
+      const chapterPath = String(chapterId).startsWith("chapter-") ? String(chapterId) : `chapter-${chapterId}`;
+      const chapterNumber = Number(String(chapterId).replace(/^chapter-/i, ""));
+      const chapterUrl = `${MH_DOMAIN}/chapter/${encodeURIComponent(mangaId)}/${chapterPath}`;
+      let response = await this.requestManager.schedule(App.createRequest({
+        url: chapterUrl,
+        method: "GET",
+        headers: {
+          "Accept": "text/html,application/xhtml+xml",
+          "Referer": `${MH_DOMAIN}/manga/${encodeURIComponent(mangaId)}`
+        }
+      }), 1);
+      let pages = extractChapterImageUrls(response.data);
+      if (pages.length == 0 && ([403, 503].includes(response.status) || /Just a moment|Enable JavaScript and cookies to continue|api rate limit excessed|api rate limit exceeded|go to mangahub\.io to continue reading/i.test(String(response.data ?? "")))) {
         await this.refreshAPIKey();
+        response = await this.requestManager.schedule(App.createRequest({
+          url: chapterUrl,
+          method: "GET",
+          headers: {
+            "Accept": "text/html,application/xhtml+xml",
+            "Referer": `${MH_DOMAIN}/manga/${encodeURIComponent(mangaId)}`
+          }
+        }), 1);
+        pages = extractChapterImageUrls(response.data);
       }
-      const data = await this.executeGraphQL(`query {
-                    chapter(x: m01, slug: "${escapeGraphQLString(mangaId)}", number: ${Number(chapterId)}) {
+      if (pages.length == 0) {
+        if (Number.isNaN(chapterNumber)) {
+          throw new Error(`Failed to extract pages from chapter page and chapter fallback number is invalid for mangaId:${mangaId} chapterId:${chapterId}`);
+        }
+        const data = await this.executeGraphQL(`query {
+                    chapter(x: m01, slug: "${escapeGraphQLString(mangaId)}", number: ${chapterNumber}) {
                       pages
-                      title
-                      slug
                     }
                   }
-                  `
-      );
-      if (!data.chapter?.pages) throw new Error(`Failed to parse chapter or pages property from data object mangaId:${mangaId} chapterId:${chapterId}`);
-      const pages = [];
-      try {
-        const parsedPages = JSON.parse(data.chapter.pages);
-        for (const img of parsedPages.i) {
-          pages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
+                  `);
+        if (!data.chapter?.pages) throw new Error(`Failed to parse chapter or pages property from data object mangaId:${mangaId} chapterId:${chapterId}`);
+        try {
+          const parsedPages = JSON.parse(data.chapter.pages);
+          for (const img of parsedPages.i) {
+            pages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
+          }
+        } catch (e) {
+          throw new Error(`${e}`);
         }
-        this.chapterRequestsSinceRefresh += 1;
-      } catch (e) {
-        throw new Error(`${e}`);
+      }
+      if (pages.length == 0) {
+        throw new Error(`Failed to extract pages from chapter page mangaId:${mangaId} chapterId:${chapterId}`);
       }
       return App.createChapterDetails({
         id: chapterId,
@@ -1575,7 +1612,6 @@ var _Sources = (() => {
           const mhubAccess = extractSetCookieHeader(response.headers) || extractMhubAccessFromText(response.data);
           if (mhubAccess) {
             await this.storeMhubAccess(mhubAccess);
-            this.chapterRequestsSinceRefresh = 0;
             return;
           }
         } catch (e) {
