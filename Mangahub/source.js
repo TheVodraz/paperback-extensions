@@ -1082,6 +1082,26 @@ var _Sources = (() => {
     const match = /mhub_access=([^;]+)/.exec(mergedCookies);
     return match?.[1] ?? "";
   };
+  var extractMhubAccessFromText = (value) => {
+    const source = String(value ?? "");
+    if (!source) return "";
+    const cookieMatch = /mhub_access=([^;"'\s<]+)/i.exec(source);
+    if (cookieMatch?.[1]) return extractMhubAccess(cookieMatch[1]);
+    const inlineMatch = /mhub_access["'\s:=]+([^"',;\s<]+)/i.exec(source);
+    return extractMhubAccess(inlineMatch?.[1] ?? "");
+  };
+  var mergeCookieHeader = (currentValue, cookieName, cookieValue) => {
+    const nextCookie = `${cookieName}=${cookieValue}`;
+    const current = String(currentValue ?? "").trim();
+    if (!current) return nextCookie;
+    if (new RegExp(`${cookieName}=`, "i").test(current)) {
+      return current.replace(new RegExp(`${cookieName}=[^;]*`, "i"), nextCookie);
+    }
+    return `${current}; ${nextCookie}`;
+  };
+  var sleep = async (ms) => {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  };
   var parseSearch = (rows, filters = {}) => {
     const collectedIds = [];
     const searchResults = [];
@@ -1115,17 +1135,17 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.0",
+    version: "3.2.1",
     name: "Mangahub",
     icon: "icon.png",
-    author: "Netsky",
-    authorWebsite: "https://github.com/TheNetsky",
+    author: "TheVodraz | Netsky",
+    authorWebsite: "https://github.com/thevodraz",
     description: "Extension that pulls manga from mangahub.io",
     contentRating: import_types2.ContentRating.MATURE,
     websiteBaseURL: MH_DOMAIN,
     sourceTags: [
       {
-        text: "Buggy",
+        text: "WIP",
         type: import_types2.BadgeColor.RED
       }
     ],
@@ -1133,6 +1153,7 @@ var _Sources = (() => {
   };
   var Mangahub = class {
     constructor() {
+      this.chapterRequestsSinceRefresh = 0;
       this.stateManager = App.createSourceStateManager();
       this.getMhubAccess = async () => {
         return extractMhubAccess(await this.stateManager.retrieve("mhub_key"));
@@ -1158,6 +1179,7 @@ var _Sources = (() => {
             };
             if (mhubAccess) {
               request.headers["x-mhub-access"] = mhubAccess;
+              request.headers["Cookie"] = mergeCookieHeader(request.headers["Cookie"], "mhub_access", mhubAccess);
             }
             return request;
           },
@@ -1188,9 +1210,23 @@ var _Sources = (() => {
           errors: [{ message: "Cloudflare challenge required" }]
         };
       }
+      if (typeof response.data == "object" && response.data !== null) {
+        return response.data;
+      }
       try {
         return JSON.parse(response.data);
       } catch (e) {
+        const inlineMhubAccess = extractMhubAccessFromText(response.data);
+        if (inlineMhubAccess) {
+          return {
+            errors: [{ message: "Mangahub session token was rotated. Retrying with a fresh token." }]
+          };
+        }
+        if (/api rate limit excessed|api rate limit exceeded|go to mangahub\.io to continue reading/i.test(String(response.data ?? ""))) {
+          return {
+            errors: [{ message: "API RATE LIMIT EXCEEDED! GO TO MANGAHUB.IO TO CONTINUE READING!" }]
+          };
+        }
         return {
           errors: [{ message: `Failed to parse GraphQL response: ${e}` }]
         };
@@ -1204,7 +1240,10 @@ var _Sources = (() => {
       if (/Cannot query field/i.test(message)) return false;
       return /cloudflare|challenge|rate limit|api limit|forbidden|unauthorized|access|token|expired|failed to parse graphql response/i.test(message);
     }
-    async executeGraphQL(query, retries = 1) {
+    async executeGraphQL(query, retries = 2) {
+      if (!await this.getMhubAccess()) {
+        await this.refreshAPIKey();
+      }
       const request = this.createGraphQLRequest(query);
       const response = await this.requestManager.schedule(request, 1);
       const mhubAccess = extractSetCookieHeader(response.headers);
@@ -1215,6 +1254,7 @@ var _Sources = (() => {
       if (payload?.errors?.length) {
         if (retries > 0 && this.shouldRetryGraphQLError(payload.errors)) {
           await this.refreshAPIKey();
+          await sleep(750);
           return await this.executeGraphQL(query, retries - 1);
         }
         throw new Error(this.getGraphQLErrorMessage(payload.errors));
@@ -1296,6 +1336,9 @@ var _Sources = (() => {
       return parseChapters(data.manga.chapters, mangaId);
     }
     async getChapterDetails(mangaId, chapterId) {
+      if (!await this.getMhubAccess() || this.chapterRequestsSinceRefresh >= 4) {
+        await this.refreshAPIKey();
+      }
       const data = await this.executeGraphQL(`query {
                     chapter(x: m01, slug: "${escapeGraphQLString(mangaId)}", number: ${Number(chapterId)}) {
                       pages
@@ -1312,6 +1355,7 @@ var _Sources = (() => {
         for (const img of parsedPages.i) {
           pages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
         }
+        this.chapterRequestsSinceRefresh += 1;
       } catch (e) {
         throw new Error(`${e}`);
       }
@@ -1513,21 +1557,36 @@ var _Sources = (() => {
       });
     }
     async refreshAPIKey() {
-      const request = App.createRequest({
-        url: `${MH_DOMAIN}/chapter/the-last-human/chapter-1?reloadKey=1`,
-        method: "GET",
-        headers: {
-          "Referer": `${MH_DOMAIN}/`,
-          "User-Agent": await this.requestManager.getDefaultUserAgent()
+      const refreshUrls = [
+        `${MH_DOMAIN}/chapter/the-last-human/chapter-1?reloadKey=1`,
+        `${MH_DOMAIN}/`,
+        `${MH_DOMAIN}/search`
+      ];
+      const userAgent = await this.requestManager.getDefaultUserAgent();
+      for (const url of refreshUrls) {
+        try {
+          const request = App.createRequest({
+            url,
+            method: "GET",
+            headers: {
+              "Referer": `${MH_DOMAIN}/`,
+              "User-Agent": userAgent,
+              "Cache-Control": "no-cache",
+              "Pragma": "no-cache"
+            }
+          });
+          const response = await this.requestManager.schedule(request, 1);
+          const mhubAccess = extractSetCookieHeader(response.headers) || extractMhubAccessFromText(response.data);
+          if (mhubAccess) {
+            await this.storeMhubAccess(mhubAccess);
+            this.chapterRequestsSinceRefresh = 0;
+            return;
+          }
+        } catch (e) {
         }
-      });
-      const response = await this.requestManager.schedule(request, 1);
-      const mhubAccess = extractSetCookieHeader(response.headers);
-      if (mhubAccess) {
-        await this.storeMhubAccess(mhubAccess);
       }
       if (!await this.getMhubAccess()) {
-        throw new Error("Mangahub Cloudflare bypass expired. Open the source and run the cloud icon again.");
+        throw new Error("Mangahub session refresh failed. Open the source and run the cloud icon again.");
       }
     }
   };
