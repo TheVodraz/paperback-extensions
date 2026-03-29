@@ -1118,8 +1118,10 @@ var _Sources = (() => {
         }
         const candidate = source.slice(index, end).replace(/^\/\//, "https://").replace(/^http:\/\//i, "https://");
         if (/^https:\/\/imgx\.mghcdn\.com\//i.test(candidate) && !seen.has(candidate)) {
-          seen.add(candidate);
-          pages.push(candidate);
+          if (/\.(jpg|jpeg|png|webp|gif)$/i.test(candidate) && !/thumb|cover|avatar|icon|logo/i.test(candidate)) {
+            seen.add(candidate);
+            pages.push(candidate);
+          }
         }
         index = source.indexOf(prefix, index + prefix.length);
       }
@@ -1159,7 +1161,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.4",
+    version: "3.2.5",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1384,7 +1386,7 @@ var _Sources = (() => {
         }), 1);
         pages = extractChapterImageUrls(response.data);
       }
-      if (pages.length < 10) {
+      if (pages.length == 0) {
         if (Number.isNaN(chapterNumber)) {
           throw new Error(`Failed to extract pages from chapter page and chapter fallback number is invalid for mangaId:${mangaId} chapterId:${chapterId}`);
         }
@@ -1397,12 +1399,8 @@ var _Sources = (() => {
         if (!data.chapter?.pages) throw new Error(`Failed to parse chapter or pages property from data object mangaId:${mangaId} chapterId:${chapterId}`);
         try {
           const parsedPages = JSON.parse(data.chapter.pages);
-          const graphqlPages = [];
           for (const img of parsedPages.i) {
-            graphqlPages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
-          }
-          if (graphqlPages.length > pages.length) {
-            pages = graphqlPages;
+            pages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
           }
         } catch (e) {
           throw new Error(`${e}`);
