@@ -1132,6 +1132,27 @@ var _Sources = (() => {
     }
     return pages;
   };
+  var getChapterImagePattern = (pages) => {
+    const parsedPages = [];
+    for (const page of pages) {
+      const match = /^(https:\/\/imgx\.mghcdn\.com\/.+\/)(\d+)\.(jpg|jpeg|png|webp|gif)(?:[?#].*)?$/i.exec(page);
+      if (!match) continue;
+      parsedPages.push({
+        prefix: match[1],
+        page: Number(match[2]),
+        extension: match[3].toLowerCase()
+      });
+    }
+    if (parsedPages.length == 0) return;
+    const prefix = parsedPages[0].prefix;
+    const extension = parsedPages[0].extension;
+    if (!parsedPages.every((page) => page.prefix == prefix && page.extension == extension)) return;
+    return {
+      prefix,
+      extension,
+      maxPage: Math.max(...parsedPages.map((page) => page.page))
+    };
+  };
   var parseSearch = (rows, filters = {}) => {
     const collectedIds = [];
     const searchResults = [];
@@ -1165,7 +1186,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.7",
+    version: "3.2.8",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1292,6 +1313,52 @@ var _Sources = (() => {
       }
       return payload.data;
     }
+    async canAccessUrl(url) {
+      try {
+        const response = await this.requestManager.schedule(App.createRequest({
+          url,
+          method: "HEAD",
+          headers: {
+            "Referer": `${MH_DOMAIN}/`
+          }
+        }), 1);
+        return response.status >= 200 && response.status < 300;
+      } catch (e) {
+        return false;
+      }
+    }
+    async expandChapterPagesFromCdNSeed(pages) {
+      const pattern = getChapterImagePattern(pages);
+      if (!pattern) return pages;
+      let low = pattern.maxPage;
+      let high = low;
+      while (await this.canAccessUrl(`${pattern.prefix}${high + 1}.${pattern.extension}`)) {
+        low = high + 1;
+        high = Math.max(high + 1, high * 2);
+        if (high >= 500) {
+          high = 500;
+          break;
+        }
+      }
+      if (high > low) {
+        let left = low;
+        let right = high;
+        while (left + 1 < right) {
+          const middle = Math.floor((left + right) / 2);
+          if (await this.canAccessUrl(`${pattern.prefix}${middle}.${pattern.extension}`)) {
+            left = middle;
+          } else {
+            right = middle;
+          }
+        }
+        low = left;
+      }
+      const expandedPages = [];
+      for (let page = 1; page <= low; page++) {
+        expandedPages.push(`${pattern.prefix}${page}.${pattern.extension}`);
+      }
+      return expandedPages.length > pages.length ? expandedPages : pages;
+    }
     buildSearchQuery({ title = "", genre = "", offset = 0, alt = false, includeAuthor = true }) {
       return `query {
                     search(x: m01, alt: ${alt ? "true" : "false"}, q: "${escapeGraphQLString(title)}", genre: "${escapeGraphQLString(genre)}", offset:${offset}) {
@@ -1381,6 +1448,9 @@ var _Sources = (() => {
         }
       }), 1);
       let pages = extractChapterImageUrls(response.data);
+      if (pages.length > 0 && pages.length <= 10) {
+        pages = await this.expandChapterPagesFromCdNSeed(pages);
+      }
       let blocked = chapterPageBlocked(response);
       if (pages.length == 0 && blocked) {
         await this.refreshAPIKey();
@@ -1393,6 +1463,9 @@ var _Sources = (() => {
           }
         }), 1);
         pages = extractChapterImageUrls(response.data);
+        if (pages.length > 0 && pages.length <= 10) {
+          pages = await this.expandChapterPagesFromCdNSeed(pages);
+        }
         blocked = chapterPageBlocked(response);
       }
       if (pages.length == 0 && blocked) {
