@@ -1384,7 +1384,7 @@ var _Sources = (() => {
         }), 1);
         pages = extractChapterImageUrls(response.data);
       }
-      if (pages.length == 0) {
+      if (pages.length < 10) {
         if (Number.isNaN(chapterNumber)) {
           throw new Error(`Failed to extract pages from chapter page and chapter fallback number is invalid for mangaId:${mangaId} chapterId:${chapterId}`);
         }
@@ -1397,8 +1397,12 @@ var _Sources = (() => {
         if (!data.chapter?.pages) throw new Error(`Failed to parse chapter or pages property from data object mangaId:${mangaId} chapterId:${chapterId}`);
         try {
           const parsedPages = JSON.parse(data.chapter.pages);
+          const graphqlPages = [];
           for (const img of parsedPages.i) {
-            pages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
+            graphqlPages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
+          }
+          if (graphqlPages.length > pages.length) {
+            pages = graphqlPages;
           }
         } catch (e) {
           throw new Error(`${e}`);
