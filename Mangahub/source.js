@@ -1118,7 +1118,11 @@ var _Sources = (() => {
         }
         const candidate = source.slice(index, end).replace(/^\/\//, "https://").replace(/^http:\/\//i, "https://");
         if (/^https:\/\/imgx\.mghcdn\.com\//i.test(candidate) && !seen.has(candidate)) {
-          if (/\.(jpg|jpeg|png|webp|gif)$/i.test(candidate) && !/thumb|cover|avatar|icon|logo/i.test(candidate)) {
+          const candidatePath = candidate.split(/[?#]/)[0].toLowerCase();
+          const candidateFile = candidatePath.split("/").pop() ?? "";
+          const looksLikeImage = /\.(jpg|jpeg|png|webp|gif)$/i.test(candidatePath);
+          const looksLikeThumbnail = /(?:^|\/)(thumbs?|covers?|avatars?|icons?|logos?)(?:\/|$)/i.test(candidatePath) || /(?:^|[-_])(thumb|cover|avatar|icon|logo)(?:[-_.]|$)/i.test(candidateFile);
+          if (looksLikeImage && !looksLikeThumbnail) {
             seen.add(candidate);
             pages.push(candidate);
           }
@@ -1161,7 +1165,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.5",
+    version: "3.2.6",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1365,6 +1369,9 @@ var _Sources = (() => {
       const chapterNumber = Number(chapterNumberMatch?.[1] ?? rawChapterId.replace(/^chapter-/i, ""));
       const chapterPath = !Number.isNaN(chapterNumber) ? `chapter-${chapterNumber}` : rawChapterId.startsWith("chapter-") ? rawChapterId : `chapter-${rawChapterId}`;
       const chapterUrl = `${MH_DOMAIN}/chapter/${encodeURIComponent(mangaId)}/${chapterPath}`;
+      const chapterPageBlocked = (response) => {
+        return [403, 503].includes(response.status) || /Just a moment|Enable JavaScript and cookies to continue|api rate limit excessed|api rate limit exceeded|go to mangahub\.io to continue reading/i.test(String(response.data ?? ""));
+      };
       let response = await this.requestManager.schedule(App.createRequest({
         url: chapterUrl,
         method: "GET",
@@ -1374,7 +1381,8 @@ var _Sources = (() => {
         }
       }), 1);
       let pages = extractChapterImageUrls(response.data);
-      if (pages.length == 0 && ([403, 503].includes(response.status) || /Just a moment|Enable JavaScript and cookies to continue|api rate limit excessed|api rate limit exceeded|go to mangahub\.io to continue reading/i.test(String(response.data ?? "")))) {
+      let blocked = chapterPageBlocked(response);
+      if (pages.length == 0 && blocked) {
         await this.refreshAPIKey();
         response = await this.requestManager.schedule(App.createRequest({
           url: chapterUrl,
@@ -1385,6 +1393,10 @@ var _Sources = (() => {
           }
         }), 1);
         pages = extractChapterImageUrls(response.data);
+        blocked = chapterPageBlocked(response);
+      }
+      if (pages.length == 0 && blocked) {
+        throw new Error("Mangahub blocked chapter page access. Open the source and run the cloud icon again, then retry the chapter.");
       }
       if (pages.length == 0) {
         if (Number.isNaN(chapterNumber)) {
