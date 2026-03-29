@@ -1165,7 +1165,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.6",
+    version: "3.2.7",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1398,24 +1398,37 @@ var _Sources = (() => {
       if (pages.length == 0 && blocked) {
         throw new Error("Mangahub blocked chapter page access. Open the source and run the cloud icon again, then retry the chapter.");
       }
-      if (pages.length == 0) {
+      if (pages.length < 10) {
         if (Number.isNaN(chapterNumber)) {
           throw new Error(`Failed to extract pages from chapter page and chapter fallback number is invalid for mangaId:${mangaId} chapterId:${chapterId}`);
         }
-        const data = await this.executeGraphQL(`query {
+        if (blocked && pages.length > 0) {
+          return App.createChapterDetails({
+            id: chapterId,
+            mangaId,
+            pages
+          });
+        }
+        try {
+          const data = await this.executeGraphQL(`query {
                     chapter(x: m01, slug: "${escapeGraphQLString(mangaId)}", number: ${chapterNumber}) {
                       pages
                     }
                   }
                   `);
-        if (!data.chapter?.pages) throw new Error(`Failed to parse chapter or pages property from data object mangaId:${mangaId} chapterId:${chapterId}`);
-        try {
+          if (!data.chapter?.pages) throw new Error(`Failed to parse chapter or pages property from data object mangaId:${mangaId} chapterId:${chapterId}`);
           const parsedPages = JSON.parse(data.chapter.pages);
+          const graphqlPages = [];
           for (const img of parsedPages.i) {
-            pages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
+            graphqlPages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
+          }
+          if (graphqlPages.length > pages.length) {
+            pages = graphqlPages;
           }
         } catch (e) {
-          throw new Error(`${e}`);
+          if (pages.length == 0) {
+            throw new Error(`${e}`);
+          }
         }
       }
       if (pages.length == 0) {
