@@ -1381,6 +1381,28 @@ var _Sources = (() => {
     }
     return;
   };
+  var removeTinyOutlierPages = (pages, baseline) => {
+    if (pages.length < 6 || baseline <= 0) return pages;
+    const kept = [];
+    for (let index = 0; index < pages.length; index++) {
+      const current = pages[index];
+      const currentLength = current.contentLength ?? 0;
+      const previous = pages[index - 1];
+      const next = pages[index + 1];
+      const previousLength = previous?.contentLength ?? 0;
+      const nextLength = next?.contentLength ?? 0;
+      const previousLarge = previousLength >= baseline * 0.35;
+      const nextLarge = nextLength >= baseline * 0.35;
+      const clearlyTiny = currentLength > 0 && currentLength < baseline * 0.12;
+      const isolatedMiddleOutlier = clearlyTiny && previousLarge && nextLarge;
+      const isolatedTailOutlier = clearlyTiny && index == pages.length - 1 && previousLarge;
+      if (isolatedMiddleOutlier || isolatedTailOutlier) {
+        continue;
+      }
+      kept.push(current);
+    }
+    return kept.length > 0 ? kept : pages;
+  };
   var parseSearch = (rows, filters = {}) => {
     const collectedIds = [];
     const searchResults = [];
@@ -1414,7 +1436,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.18",
+    version: "3.2.19",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1695,6 +1717,11 @@ var _Sources = (() => {
           return repeatedPages;
         }
       }
+      const baseline = getMedian(expandedPages.slice(0, Math.min(6, expandedPages.length)).map((page) => page.contentLength));
+      const outlierTrimmedPages = removeTinyOutlierPages(expandedPages, baseline);
+      if (outlierTrimmedPages.length > pages.length && outlierTrimmedPages.length < expandedPages.length) {
+        return outlierTrimmedPages.map((page) => page.url);
+      }
       const repeatedTailTrim = findRepeatedTailTrim(expandedPages);
       if (repeatedTailTrim) {
         const trimmedPages = expandedPages.slice(0, expandedPages.length - repeatedTailTrim).map((page) => page.url);
@@ -1702,7 +1729,6 @@ var _Sources = (() => {
           return trimmedPages;
         }
       }
-      const baseline = getMedian(expandedPages.slice(0, Math.min(6, expandedPages.length)).map((page) => page.contentLength));
       if (baseline == 0) {
         return expandedPages.map((page) => page.url);
       }
