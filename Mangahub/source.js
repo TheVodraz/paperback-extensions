@@ -1299,6 +1299,21 @@ var _Sources = (() => {
       suffixes: [...new Set(parsedPages.map((page) => page.suffix))]
     };
   };
+  var getCandidateSuffixes = (pattern) => {
+    const observed = [...new Set((pattern?.suffixes ?? []).map((suffix) => String(suffix ?? "").toLowerCase()).filter((suffix) => suffix == "" || /^[a-z]$/.test(suffix)))];
+    const observedLetters = observed.filter((suffix) => suffix != "");
+    if (observedLetters.length == 0) {
+      return [""];
+    }
+    const maxObservedCode = Math.max(...observedLetters.map((suffix) => suffix.charCodeAt(0)));
+    const upperCode = Math.min("z".charCodeAt(0), maxObservedCode + 2);
+    const generatedLetters = [];
+    for (let code = "a".charCodeAt(0); code <= upperCode; code++) {
+      generatedLetters.push(String.fromCharCode(code));
+    }
+    const includeEmpty = observed.includes("") ? [""] : [];
+    return [...new Set([...includeEmpty, ...observedLetters, ...generatedLetters])];
+  };
   var getMedian = (values) => {
     const sorted = [...values].filter((value) => value > 0).sort((a, b) => a - b);
     if (sorted.length == 0) return 0;
@@ -1339,7 +1354,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.14",
+    version: "3.2.15",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1514,7 +1529,7 @@ var _Sources = (() => {
     async expandChapterPagesFromCdNSeed(pages) {
       const pattern = getChapterImagePattern(pages);
       if (!pattern) return pages;
-      const suffixes = ["", ...Array.from({ length: 26 }, (_, index) => String.fromCharCode(97 + index))].filter((suffix, index, array) => array.indexOf(suffix) == index);
+      const suffixes = getCandidateSuffixes(pattern);
       const accessCache = /* @__PURE__ */ new Map();
       const buildImageUrl = (page, suffix = "") => `${pattern.prefix}${page}${suffix}.${pattern.extension}`;
       const getVariantInfo = async (page, suffix = "") => {
