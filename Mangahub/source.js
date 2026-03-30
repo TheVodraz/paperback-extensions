@@ -1155,6 +1155,13 @@ var _Sources = (() => {
       suffixes: [...new Set(parsedPages.map((page) => page.suffix))]
     };
   };
+  var getMedian = (values) => {
+    const sorted = [...values].filter((value) => value > 0).sort((a, b) => a - b);
+    if (sorted.length == 0) return 0;
+    const middle = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 == 1) return sorted[middle];
+    return Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+  };
   var parseSearch = (rows, filters = {}) => {
     const collectedIds = [];
     const searchResults = [];
@@ -1188,7 +1195,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.10",
+    version: "3.2.11",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1314,7 +1321,7 @@ var _Sources = (() => {
       }
       return payload.data;
     }
-    async canAccessUrl(url) {
+    async getUrlInfo(url) {
       try {
         const response = await this.requestManager.schedule(App.createRequest({
           url,
@@ -1323,36 +1330,36 @@ var _Sources = (() => {
             "Referer": `${MH_DOMAIN}/`
           }
         }), 1);
-        return response.status >= 200 && response.status < 300;
+        const contentLength = Number(response.headers?.["Content-Length"] ?? response.headers?.["content-length"] ?? 0);
+        return {
+          ok: response.status >= 200 && response.status < 300,
+          contentLength
+        };
       } catch (e) {
-        return false;
+        return {
+          ok: false,
+          contentLength: 0
+        };
       }
     }
     async expandChapterPagesFromCdNSeed(pages) {
       const pattern = getChapterImagePattern(pages);
       if (!pattern) return pages;
-      const suffixes = pattern.suffixes.includes("") ? pattern.suffixes : ["", ...pattern.suffixes];
-      if (suffixes.some((suffix) => suffix != "")) {
-        for (const suffix of ["a", "b"]) {
-          if (!suffixes.includes(suffix)) {
-            suffixes.push(suffix);
-          }
-        }
-      }
+      const suffixes = ["", ...Array.from({ length: 26 }, (_, index) => String.fromCharCode(97 + index))].filter((suffix, index, array) => array.indexOf(suffix) == index);
       const accessCache = /* @__PURE__ */ new Map();
       const buildImageUrl = (page, suffix = "") => `${pattern.prefix}${page}${suffix}.${pattern.extension}`;
-      const canAccessVariant = async (page, suffix = "") => {
+      const getVariantInfo = async (page, suffix = "") => {
         const cacheKey = `${page}:${suffix}`;
         if (accessCache.has(cacheKey)) {
           return accessCache.get(cacheKey);
         }
-        const exists = await this.canAccessUrl(buildImageUrl(page, suffix));
-        accessCache.set(cacheKey, exists);
-        return exists;
+        const info = await this.getUrlInfo(buildImageUrl(page, suffix));
+        accessCache.set(cacheKey, info);
+        return info;
       };
       const canAccessAnyVariant = async (page) => {
         for (const suffix of suffixes) {
-          if (await canAccessVariant(page, suffix)) {
+          if ((await getVariantInfo(page, suffix)).ok) {
             return true;
           }
         }
@@ -1384,19 +1391,53 @@ var _Sources = (() => {
       const expandedPages = [];
       if (suffixes.length == 1 && suffixes[0] == "") {
         for (let page = 1; page <= low; page++) {
-          expandedPages.push(buildImageUrl(page));
+          const info = await getVariantInfo(page);
+          if (info.ok) {
+            expandedPages.push({
+              url: buildImageUrl(page),
+              contentLength: info.contentLength
+            });
+          }
         }
       } else {
         for (let page = 1; page <= low; page++) {
           for (const suffix of suffixes) {
-            if (await canAccessVariant(page, suffix)) {
-              expandedPages.push(buildImageUrl(page, suffix));
+            const info = await getVariantInfo(page, suffix);
+            if (info.ok) {
+              expandedPages.push({
+                url: buildImageUrl(page, suffix),
+                contentLength: info.contentLength
+              });
               break;
             }
           }
         }
       }
-      return expandedPages.length > pages.length ? expandedPages : pages;
+      if (expandedPages.length <= pages.length) return pages;
+      const baseline = getMedian(expandedPages.slice(0, Math.min(6, expandedPages.length)).map((page) => page.contentLength));
+      if (baseline == 0) {
+        return expandedPages.map((page) => page.url);
+      }
+      const keptPages = [];
+      const pendingPages = [];
+      for (const page of expandedPages) {
+        const suspicious = keptPages.length >= 6 && page.contentLength > 0 && page.contentLength < baseline * 0.2;
+        if (suspicious) {
+          pendingPages.push(page);
+          if (pendingPages.length >= 2) {
+            keptPages.push(pendingPages[0]);
+            break;
+          }
+          continue;
+        }
+        if (pendingPages.length > 0) {
+          keptPages.push(...pendingPages);
+          pendingPages.length = 0;
+        }
+        keptPages.push(page);
+      }
+      const normalizedPages = keptPages.map((page) => page.url);
+      return normalizedPages.length > pages.length ? normalizedPages : pages;
     }
     buildSearchQuery({ title = "", genre = "", offset = 0, alt = false, includeAuthor = true }) {
       return `query {
