@@ -1188,7 +1188,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.9",
+    version: "3.2.10",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1222,13 +1222,11 @@ var _Sources = (() => {
           interceptRequest: async (request) => {
             const mhubAccess = await this.getMhubAccess();
             request.headers = {
-              ...request.headers ?? {},
-              ...{
-                "Referer": `${MH_DOMAIN}/`,
-                "Origin": `${MH_DOMAIN}`,
-                "User-Agent": await this.requestManager.getDefaultUserAgent()
-              }
+              ...request.headers ?? {}
             };
+            request.headers["Referer"] = request.headers["Referer"] ?? `${MH_DOMAIN}/`;
+            request.headers["Origin"] = request.headers["Origin"] ?? `${MH_DOMAIN}`;
+            request.headers["User-Agent"] = request.headers["User-Agent"] ?? await this.requestManager.getDefaultUserAgent();
             if (mhubAccess) {
               request.headers["x-mhub-access"] = mhubAccess;
               request.headers["Cookie"] = mergeCookieHeader(request.headers["Cookie"], "mhub_access", mhubAccess);
@@ -1245,11 +1243,12 @@ var _Sources = (() => {
         }
       });
     }
-    createGraphQLRequest(query) {
+    createGraphQLRequest(query, headers = {}) {
       return App.createRequest({
         url: MH_API_DOMAIN,
         method: "POST",
         headers: {
+          ...headers,
           "Accept": "application/json",
           "Content-Type": "application/json"
         },
@@ -1292,11 +1291,11 @@ var _Sources = (() => {
       if (/Cannot query field/i.test(message)) return false;
       return /cloudflare|challenge|rate limit|api limit|forbidden|unauthorized|access|token|expired|failed to parse graphql response/i.test(message);
     }
-    async executeGraphQL(query, retries = 2) {
+    async executeGraphQL(query, retries = 2, headers = {}) {
       if (!await this.getMhubAccess()) {
         await this.refreshAPIKey();
       }
-      const request = this.createGraphQLRequest(query);
+      const request = this.createGraphQLRequest(query, headers);
       const response = await this.requestManager.schedule(request, 1);
       const mhubAccess = extractSetCookieHeader(response.headers);
       if (mhubAccess) {
@@ -1306,7 +1305,7 @@ var _Sources = (() => {
       if (payload?.errors?.length) {
         if (retries > 0 && this.shouldRetryGraphQLError(payload.errors)) {
           await this.refreshAPIKey();
-          return await this.executeGraphQL(query, retries - 1);
+          return await this.executeGraphQL(query, retries - 1, headers);
         }
         throw new Error(this.getGraphQLErrorMessage(payload.errors));
       }
@@ -1488,9 +1487,6 @@ var _Sources = (() => {
         }
       }), 1);
       let pages = extractChapterImageUrls(response.data);
-      if (pages.length > 0 && pages.length <= 10) {
-        pages = await this.expandChapterPagesFromCdNSeed(pages);
-      }
       let blocked = chapterPageBlocked(response);
       if (pages.length == 0 && blocked) {
         await this.refreshAPIKey();
@@ -1503,10 +1499,33 @@ var _Sources = (() => {
           }
         }), 1);
         pages = extractChapterImageUrls(response.data);
-        if (pages.length > 0 && pages.length <= 10) {
-          pages = await this.expandChapterPagesFromCdNSeed(pages);
-        }
         blocked = chapterPageBlocked(response);
+      }
+      if (!blocked && !Number.isNaN(chapterNumber) && pages.length <= 10) {
+        try {
+          const data = await this.executeGraphQL(`query {
+                    chapter(x: m01, slug: "${escapeGraphQLString(mangaId)}", number: ${chapterNumber}) {
+                      pages
+                    }
+                  }
+                  `, 2, {
+            "Referer": chapterUrl
+          });
+          if (data.chapter?.pages) {
+            const parsedPages = JSON.parse(data.chapter.pages);
+            const graphqlPages = [];
+            for (const img of parsedPages.i) {
+              graphqlPages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
+            }
+            if (graphqlPages.length > 0) {
+              pages = graphqlPages;
+            }
+          }
+        } catch (e) {
+        }
+      }
+      if (pages.length > 0 && pages.length <= 10) {
+        pages = await this.expandChapterPagesFromCdNSeed(pages);
       }
       if (pages.length == 0 && blocked) {
         throw new Error("Mangahub blocked chapter page access. Open the source and run the cloud icon again, then retry the chapter.");
