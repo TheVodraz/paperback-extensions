@@ -1314,6 +1314,13 @@ var _Sources = (() => {
     const includeEmpty = observed.includes("") ? [""] : [];
     return [...new Set([...includeEmpty, ...observedLetters, ...generatedLetters])];
   };
+  var chunkArray = (items, size) => {
+    const chunks = [];
+    for (let index = 0; index < items.length; index += size) {
+      chunks.push(items.slice(index, index + size));
+    }
+    return chunks;
+  };
   var getMedian = (values) => {
     const sorted = [...values].filter((value) => value > 0).sort((a, b) => a - b);
     if (sorted.length == 0) return 0;
@@ -1354,7 +1361,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.15",
+    version: "3.2.16",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1384,6 +1391,33 @@ var _Sources = (() => {
       this.requestManager = App.createRequestManager({
         requestsPerSecond: 2,
         requestTimeout: 15e3,
+        interceptor: {
+          interceptRequest: async (request) => {
+            const mhubAccess = await this.getMhubAccess();
+            request.headers = {
+              ...request.headers ?? {}
+            };
+            request.headers["Referer"] = request.headers["Referer"] ?? `${MH_DOMAIN}/`;
+            request.headers["Origin"] = request.headers["Origin"] ?? `${MH_DOMAIN}`;
+            request.headers["User-Agent"] = request.headers["User-Agent"] ?? await this.requestManager.getDefaultUserAgent();
+            if (mhubAccess) {
+              request.headers["x-mhub-access"] = mhubAccess;
+              request.headers["Cookie"] = mergeCookieHeader(request.headers["Cookie"], "mhub_access", mhubAccess);
+            }
+            return request;
+          },
+          interceptResponse: async (response) => {
+            const mhubAccess = extractSetCookieHeader(response.headers);
+            if (mhubAccess) {
+              await this.storeMhubAccess(mhubAccess);
+            }
+            return response;
+          }
+        }
+      });
+      this.probeRequestManager = App.createRequestManager({
+        requestsPerSecond: 12,
+        requestTimeout: 4e3,
         interceptor: {
           interceptRequest: async (request) => {
             const mhubAccess = await this.getMhubAccess();
@@ -1507,7 +1541,7 @@ var _Sources = (() => {
     }
     async getUrlInfo(url) {
       try {
-        const response = await this.requestManager.schedule(App.createRequest({
+        const response = await this.probeRequestManager.schedule(App.createRequest({
           url,
           method: "HEAD",
           headers: {
@@ -1530,6 +1564,7 @@ var _Sources = (() => {
       const pattern = getChapterImagePattern(pages);
       if (!pattern) return pages;
       const suffixes = getCandidateSuffixes(pattern);
+      const batchSize = 12;
       const accessCache = /* @__PURE__ */ new Map();
       const buildImageUrl = (page, suffix = "") => `${pattern.prefix}${page}${suffix}.${pattern.extension}`;
       const getVariantInfo = async (page, suffix = "") => {
@@ -1542,12 +1577,8 @@ var _Sources = (() => {
         return info;
       };
       const canAccessAnyVariant = async (page) => {
-        for (const suffix of suffixes) {
-          if ((await getVariantInfo(page, suffix)).ok) {
-            return true;
-          }
-        }
-        return false;
+        const variants = await Promise.all(suffixes.map((suffix) => getVariantInfo(page, suffix)));
+        return variants.some((variant) => variant.ok);
       };
       let low = pattern.maxPage;
       let high = low;
@@ -1574,27 +1605,33 @@ var _Sources = (() => {
       }
       const expandedPages = [];
       if (suffixes.length == 1 && suffixes[0] == "") {
-        for (let page = 1; page <= low; page++) {
-          const info = await getVariantInfo(page);
-          if (info.ok) {
-            expandedPages.push({
+        const pageNumbers = Array.from({ length: low }, (_, index) => index + 1);
+        for (const batch of chunkArray(pageNumbers, batchSize)) {
+          const results = await Promise.all(batch.map(async (page) => {
+            const info = await getVariantInfo(page);
+            if (!info.ok) return;
+            return {
               url: buildImageUrl(page),
               contentLength: info.contentLength
-            });
-          }
+            };
+          }));
+          expandedPages.push(...results.filter(Boolean));
         }
       } else {
-        for (let page = 1; page <= low; page++) {
-          for (const suffix of suffixes) {
-            const info = await getVariantInfo(page, suffix);
-            if (info.ok) {
-              expandedPages.push({
-                url: buildImageUrl(page, suffix),
-                contentLength: info.contentLength
-              });
-              break;
+        const pageNumbers = Array.from({ length: low }, (_, index) => index + 1);
+        for (const batch of chunkArray(pageNumbers, batchSize)) {
+          const results = await Promise.all(batch.map(async (page) => {
+            for (const suffix of suffixes) {
+              const info = await getVariantInfo(page, suffix);
+              if (info.ok) {
+                return {
+                  url: buildImageUrl(page, suffix),
+                  contentLength: info.contentLength
+                };
+              }
             }
-          }
+          }));
+          expandedPages.push(...results.filter(Boolean));
         }
       }
       if (expandedPages.length <= pages.length) return pages;
