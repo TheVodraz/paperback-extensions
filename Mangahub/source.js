@@ -1135,12 +1135,13 @@ var _Sources = (() => {
   var getChapterImagePattern = (pages) => {
     const parsedPages = [];
     for (const page of pages) {
-      const match = /^(https:\/\/imgx\.mghcdn\.com\/.+\/)(\d+)\.(jpg|jpeg|png|webp|gif)(?:[?#].*)?$/i.exec(page);
+      const match = /^(https:\/\/imgx\.mghcdn\.com\/.+\/)(\d+)([a-z]?)\.(jpg|jpeg|png|webp|gif)(?:[?#].*)?$/i.exec(page);
       if (!match) continue;
       parsedPages.push({
         prefix: match[1],
         page: Number(match[2]),
-        extension: match[3].toLowerCase()
+        suffix: (match[3] ?? "").toLowerCase(),
+        extension: match[4].toLowerCase()
       });
     }
     if (parsedPages.length == 0) return;
@@ -1150,7 +1151,8 @@ var _Sources = (() => {
     return {
       prefix,
       extension,
-      maxPage: Math.max(...parsedPages.map((page) => page.page))
+      maxPage: Math.max(...parsedPages.map((page) => page.page)),
+      suffixes: [...new Set(parsedPages.map((page) => page.suffix))]
     };
   };
   var parseSearch = (rows, filters = {}) => {
@@ -1186,7 +1188,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.8",
+    version: "3.2.9",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1330,9 +1332,36 @@ var _Sources = (() => {
     async expandChapterPagesFromCdNSeed(pages) {
       const pattern = getChapterImagePattern(pages);
       if (!pattern) return pages;
+      const suffixes = pattern.suffixes.includes("") ? pattern.suffixes : ["", ...pattern.suffixes];
+      if (suffixes.some((suffix) => suffix != "")) {
+        for (const suffix of ["a", "b"]) {
+          if (!suffixes.includes(suffix)) {
+            suffixes.push(suffix);
+          }
+        }
+      }
+      const accessCache = /* @__PURE__ */ new Map();
+      const buildImageUrl = (page, suffix = "") => `${pattern.prefix}${page}${suffix}.${pattern.extension}`;
+      const canAccessVariant = async (page, suffix = "") => {
+        const cacheKey = `${page}:${suffix}`;
+        if (accessCache.has(cacheKey)) {
+          return accessCache.get(cacheKey);
+        }
+        const exists = await this.canAccessUrl(buildImageUrl(page, suffix));
+        accessCache.set(cacheKey, exists);
+        return exists;
+      };
+      const canAccessAnyVariant = async (page) => {
+        for (const suffix of suffixes) {
+          if (await canAccessVariant(page, suffix)) {
+            return true;
+          }
+        }
+        return false;
+      };
       let low = pattern.maxPage;
       let high = low;
-      while (await this.canAccessUrl(`${pattern.prefix}${high + 1}.${pattern.extension}`)) {
+      while (await canAccessAnyVariant(high + 1)) {
         low = high + 1;
         high = Math.max(high + 1, high * 2);
         if (high >= 500) {
@@ -1345,7 +1374,7 @@ var _Sources = (() => {
         let right = high;
         while (left + 1 < right) {
           const middle = Math.floor((left + right) / 2);
-          if (await this.canAccessUrl(`${pattern.prefix}${middle}.${pattern.extension}`)) {
+          if (await canAccessAnyVariant(middle)) {
             left = middle;
           } else {
             right = middle;
@@ -1354,8 +1383,19 @@ var _Sources = (() => {
         low = left;
       }
       const expandedPages = [];
-      for (let page = 1; page <= low; page++) {
-        expandedPages.push(`${pattern.prefix}${page}.${pattern.extension}`);
+      if (suffixes.length == 1 && suffixes[0] == "") {
+        for (let page = 1; page <= low; page++) {
+          expandedPages.push(buildImageUrl(page));
+        }
+      } else {
+        for (let page = 1; page <= low; page++) {
+          for (const suffix of suffixes) {
+            if (await canAccessVariant(page, suffix)) {
+              expandedPages.push(buildImageUrl(page, suffix));
+              break;
+            }
+          }
+        }
       }
       return expandedPages.length > pages.length ? expandedPages : pages;
     }
