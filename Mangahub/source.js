@@ -1195,7 +1195,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.11",
+    version: "3.2.12",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1263,7 +1263,7 @@ var _Sources = (() => {
       });
     }
     parseGraphQLResponse(response) {
-      if ([403, 503].includes(response.status) || typeof response.data == "string" && /Just a moment|Enable JavaScript and cookies to continue/i.test(response.data)) {
+      if ([403, 503].includes(response.status) || typeof response.data == "string" && (/Just a moment|Enable JavaScript and cookies to continue/i.test(response.data) || /^\s*</.test(response.data))) {
         return {
           errors: [{ message: "Cloudflare challenge required" }]
         };
@@ -1489,6 +1489,9 @@ var _Sources = (() => {
                         isSoftPorn                    
                     }
                  }`
+      , 2, {
+        "Referer": `${MH_DOMAIN}/manga/${encodeURIComponent(mangaId)}`
+      }
       );
       if (!data.manga) throw new Error(`Failed to parse manga property from data object mangaId:${mangaId}`);
       return parseMangaDetails(data.manga, mangaId);
@@ -1505,6 +1508,9 @@ var _Sources = (() => {
                         }                  
                     }
                  }`
+      , 2, {
+        "Referer": `${MH_DOMAIN}/manga/${encodeURIComponent(mangaId)}`
+      }
       );
       if (!data.manga) throw new Error(`Failed to parse manga property from data object mangaId:${mangaId}`);
       if (data.manga.chapters?.length == 0) throw new Error(`Failed to parse chapters property from manga object mangaId:${mangaId}`);
