@@ -1417,6 +1417,25 @@ var _Sources = (() => {
     }
     return;
   };
+  var findTerminalTinyRunCutoff = (pages, baseline) => {
+    if (pages.length < 6 || baseline <= 0) return;
+    let start = pages.length;
+    for (let index = pages.length - 1; index >= 0; index--) {
+      const currentLength = pages[index]?.contentLength ?? 0;
+      if (currentLength > 0 && currentLength < baseline * 0.12) {
+        start = index;
+        continue;
+      }
+      break;
+    }
+    if (start >= pages.length) return;
+    const tinyRunLength = pages.length - start;
+    const previousLength = pages[start - 1]?.contentLength ?? 0;
+    if (tinyRunLength >= 1 && tinyRunLength <= 4 && previousLength >= baseline * 0.35) {
+      return start;
+    }
+    return;
+  };
   var parseSearch = (rows, filters = {}) => {
     const collectedIds = [];
     const searchResults = [];
@@ -1450,7 +1469,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.20",
+    version: "3.3.0",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1732,6 +1751,13 @@ var _Sources = (() => {
         }
       }
       const baseline = getMedian(expandedPages.slice(0, Math.min(6, expandedPages.length)).map((page) => page.contentLength));
+      const terminalTinyRunCutoff = findTerminalTinyRunCutoff(expandedPages, baseline);
+      if (terminalTinyRunCutoff !== void 0) {
+        const trimmedPages = expandedPages.slice(0, terminalTinyRunCutoff).map((page) => page.url);
+        if (trimmedPages.length > pages.length) {
+          return trimmedPages;
+        }
+      }
       const modeShiftCutoff = findModeShiftCutoff(expandedPages, baseline);
       if (modeShiftCutoff !== void 0) {
         const shiftedPages = expandedPages.slice(0, modeShiftCutoff).map((page) => page.url);
