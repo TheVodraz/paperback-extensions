@@ -1353,6 +1353,34 @@ var _Sources = (() => {
     }
     return;
   };
+  var findRepeatedTailTrim = (pages) => {
+    if (pages.length < 10) return;
+    const lengths = pages.map((page) => page.contentLength ?? 0);
+    const maxTail = Math.min(8, Math.floor(lengths.length / 2));
+    for (let tailSize = maxTail; tailSize >= 2; tailSize--) {
+      const tailStart = lengths.length - tailSize;
+      const tail = lengths.slice(tailStart);
+      for (let start = tailStart - tailSize; start >= 0; start--) {
+        const candidate = lengths.slice(start, start + tailSize);
+        let comparable = 0;
+        let matches = 0;
+        for (let index = 0; index < tailSize; index++) {
+          const left = candidate[index];
+          const right = tail[index];
+          if (left <= 0 || right <= 0) continue;
+          comparable++;
+          const delta = Math.abs(left - right) / Math.max(left, right);
+          if (delta <= 0.08) {
+            matches++;
+          }
+        }
+        if (comparable >= tailSize && matches / comparable >= 0.85) {
+          return tailSize;
+        }
+      }
+    }
+    return;
+  };
   var parseSearch = (rows, filters = {}) => {
     const collectedIds = [];
     const searchResults = [];
@@ -1386,7 +1414,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.17",
+    version: "3.2.18",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1665,6 +1693,13 @@ var _Sources = (() => {
         const repeatedPages = expandedPages.slice(0, repeatedCutoff).map((page) => page.url);
         if (repeatedPages.length > pages.length) {
           return repeatedPages;
+        }
+      }
+      const repeatedTailTrim = findRepeatedTailTrim(expandedPages);
+      if (repeatedTailTrim) {
+        const trimmedPages = expandedPages.slice(0, expandedPages.length - repeatedTailTrim).map((page) => page.url);
+        if (trimmedPages.length > pages.length) {
+          return trimmedPages;
         }
       }
       const baseline = getMedian(expandedPages.slice(0, Math.min(6, expandedPages.length)).map((page) => page.contentLength));
