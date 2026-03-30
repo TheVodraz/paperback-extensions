@@ -1069,6 +1069,9 @@ var _Sources = (() => {
   var escapeGraphQLString = (value) => {
     return String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, " ").trim();
   };
+  var escapeRegex = (value) => {
+    return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  };
   var extractMhubAccess = (value) => {
     const source = String(value ?? "").trim();
     if (!source) return "";
@@ -1131,6 +1134,130 @@ var _Sources = (() => {
       }
     }
     return pages;
+  };
+  var isCloudflareChallengeText = (value) => {
+    return /Just a moment|Enable JavaScript and cookies to continue|Attention Required|cf-browser-verification|challenge-error-text/i.test(String(value ?? ""));
+  };
+  var isCloudflareBlockedResponse = (response) => {
+    return [403, 503].includes(response?.status) || isCloudflareChallengeText(response?.data);
+  };
+  var cleanHtmlText = (value) => {
+    return decode(String(value ?? "").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|section|article|li|tr|td|h[1-6])>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim());
+  };
+  var extractMetaContent = (html, name) => {
+    const escapedName = escapeRegex(name);
+    const patterns = [
+      new RegExp(`<meta[^>]+(?:name|property)=["']${escapedName}["'][^>]+content=["']([^"']+)["']`, "i"),
+      new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']${escapedName}["']`, "i")
+    ];
+    for (const pattern of patterns) {
+      const match = pattern.exec(String(html ?? ""));
+      if (match?.[1]) return decode(match[1]).trim();
+    }
+    return "";
+  };
+  var extractHeadingTitle = (html) => {
+    const match = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(String(html ?? ""));
+    return cleanHtmlText(match?.[1] ?? "");
+  };
+  var extractLabeledValue = (html, label, stopLabels) => {
+    const text = cleanHtmlText(html);
+    if (!text) return "";
+    const escapedLabel = escapeRegex(label);
+    const stopPattern = stopLabels.map((value) => escapeRegex(value)).join("|");
+    const pattern = new RegExp(`${escapedLabel}\\s+([\\s\\S]*?)(?=\\s+(?:${stopPattern})\\b|$)`, "i");
+    return cleanHtmlText(pattern.exec(text)?.[1] ?? "");
+  };
+  var extractGenresFromHtml = (html) => {
+    const genres = [];
+    const seen = /* @__PURE__ */ new Set();
+    const pattern = /<a[^>]+href=["'][^"']*(?:\/genre\/|[?&]genre=)([^"'#?]+)[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
+    let match;
+    while ((match = pattern.exec(String(html ?? ""))) !== null) {
+      const label = cleanHtmlText(match[2]);
+      const id = normalizeGenre(match[1] || label);
+      if (!id || !label || seen.has(id)) continue;
+      seen.add(id);
+      genres.push(label);
+    }
+    return genres;
+  };
+  var parseDateFromChapterText = (value) => {
+    const match = /(\d{2})-(\d{2})-(\d{4})/.exec(String(value ?? ""));
+    if (!match) return;
+    const [, month, day, year] = match;
+    return new Date(`${year}-${month}-${day}T00:00:00.000Z`);
+  };
+  var parseMangaDetailsFromHtml = (html, mangaId) => {
+    const metaTitle = extractMetaContent(html, "og:title").replace(/\s+Manga Online for Free$/i, "").trim();
+    const headingTitle = extractHeadingTitle(html);
+    const title = metaTitle || headingTitle || decode(mangaId.replace(/-/g, " "));
+    const titles = [title];
+    if (headingTitle && metaTitle && headingTitle.toLowerCase() != metaTitle.toLowerCase() && headingTitle.toLowerCase().startsWith(metaTitle.toLowerCase())) {
+      const alternateTitle = headingTitle.slice(metaTitle.length).trim();
+      if (alternateTitle) titles.push(alternateTitle);
+    }
+    const author = extractLabeledValue(html, "Author", ["Artist", "Status", "Latest", "Summary", "Report"]);
+    const artist = extractLabeledValue(html, "Artist", ["Status", "Latest", "Summary", "Report"]);
+    const status = extractLabeledValue(html, "Status", ["Latest", "Summary", "Report"]) || "ONGOING";
+    const description = extractMetaContent(html, "description") || extractMetaContent(html, "og:description") || "No description available";
+    const image = extractMetaContent(html, "og:image") || extractMetaContent(html, "twitter:image");
+    const genres = extractGenresFromHtml(html).join(",");
+    return parseMangaDetails({
+      title,
+      alternativeTitle: titles.slice(1).join(";"),
+      author,
+      artist,
+      image: image.replace(/^https?:\/\/thumb\.mghcdn\.com\//i, ""),
+      status,
+      genres,
+      description
+    }, mangaId);
+  };
+  var parseChaptersFromHtml = (html, mangaId) => {
+    const chaptersById = /* @__PURE__ */ new Map();
+    const pattern = /<a[^>]+href=["'](?:https?:\/\/mangahub\.io)?\/chapter\/([^/"'#?]+)\/([^"'#?]+)(?:\?[^"']*)?["'][^>]*>([\s\S]*?)<\/a>/gi;
+    let match;
+    while ((match = pattern.exec(String(html ?? ""))) !== null) {
+      const slug = decodeURIComponent(match[1] ?? "");
+      const chapterPath = decodeURIComponent(match[2] ?? "");
+      if (slug != mangaId || !/^chapter-/i.test(chapterPath)) continue;
+      const rawText = cleanHtmlText(match[3]);
+      const numberMatch = /chapter-(\d+(?:\.\d+)?)/i.exec(chapterPath) || /#?\s*(\d+(?:\.\d+)?)/.exec(rawText);
+      const chapNum = numberMatch ? Number(numberMatch[1]) : void 0;
+      const parsedTime = parseDateFromChapterText(rawText);
+      let name = rawText.replace(/\b(\d{2}-\d{2}-\d{4}|\d+\s+(?:minute|hour|day|week|month|year)s?\s+ago)\b$/i, "").trim();
+      name = name.replace(/^#\s*\d+(?:\.\d+)?\s*-\s*/i, "").trim();
+      if (!name || /^start reading$/i.test(name)) {
+        name = chapNum !== void 0 && !Number.isNaN(chapNum) ? `Chapter ${chapNum}` : chapterPath.replace(/^chapter-/i, "Chapter ");
+      }
+      const score = (/chapter|#/i.test(rawText) ? 4 : 0) + (parsedTime ? 2 : 0) + Math.min(rawText.length, 120) / 120;
+      const current = chaptersById.get(chapterPath);
+      if (!current || score > current.score) {
+        chaptersById.set(chapterPath, {
+          id: chapterPath,
+          name,
+          chapNum,
+          time: parsedTime,
+          score
+        });
+      }
+    }
+    const chapters = [...chaptersById.values()].sort((a, b) => {
+      const aNum = Number.isFinite(a.chapNum) ? a.chapNum : -1;
+      const bNum = Number.isFinite(b.chapNum) ? b.chapNum : -1;
+      return bNum - aNum;
+    }).map((chapter) => App.createChapter({
+      id: chapter.id,
+      name: chapter.name,
+      langCode: "\u{1F1EC}\u{1F1E7}",
+      chapNum: chapter.chapNum,
+      time: chapter.time
+    }));
+    if (chapters.length == 0) {
+      throw new Error(`Couldn't find any chapters for mangaId: ${mangaId}!`);
+    }
+    return chapters;
   };
   var getChapterImagePattern = (pages) => {
     const parsedPages = [];
@@ -1195,7 +1322,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.12",
+    version: "3.2.13",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1320,6 +1447,31 @@ var _Sources = (() => {
         throw new Error("Mangahub response did not contain data.");
       }
       return payload.data;
+    }
+    async fetchPageHtml(url, referer = `${MH_DOMAIN}/`) {
+      let response = await this.requestManager.schedule(App.createRequest({
+        url,
+        method: "GET",
+        headers: {
+          "Accept": "text/html,application/xhtml+xml",
+          "Referer": referer
+        }
+      }), 1);
+      if (isCloudflareBlockedResponse(response)) {
+        await this.refreshAPIKey();
+        response = await this.requestManager.schedule(App.createRequest({
+          url,
+          method: "GET",
+          headers: {
+            "Accept": "text/html,application/xhtml+xml",
+            "Referer": referer
+          }
+        }), 1);
+      }
+      if (isCloudflareBlockedResponse(response)) {
+        throw new Error("Mangahub blocked page access. Open the source and run the cloud icon again, then retry.");
+      }
+      return String(response.data ?? "");
     }
     async getUrlInfo(url) {
       try {
@@ -1475,7 +1627,15 @@ var _Sources = (() => {
       return `${MH_DOMAIN}/manga/${mangaId}`;
     }
     async getMangaDetails(mangaId) {
-      const data = await this.executeGraphQL(`query {
+      const pageUrl = `${MH_DOMAIN}/manga/${encodeURIComponent(mangaId)}`;
+      try {
+        const html = await this.fetchPageHtml(pageUrl);
+        return parseMangaDetailsFromHtml(html, mangaId);
+      } catch (htmlError) {
+        if (/blocked page access|run the cloud icon again/i.test(String(htmlError ?? ""))) {
+          throw htmlError;
+        }
+        const data = await this.executeGraphQL(`query {
                     manga(x: m01, slug: "${escapeGraphQLString(mangaId)}") {
                         title
                         alternativeTitle
@@ -1489,15 +1649,24 @@ var _Sources = (() => {
                         isSoftPorn                    
                     }
                  }`
-      , 2, {
-        "Referer": `${MH_DOMAIN}/manga/${encodeURIComponent(mangaId)}`
+        , 2, {
+          "Referer": pageUrl
+        }
+        );
+        if (!data.manga) throw htmlError;
+        return parseMangaDetails(data.manga, mangaId);
       }
-      );
-      if (!data.manga) throw new Error(`Failed to parse manga property from data object mangaId:${mangaId}`);
-      return parseMangaDetails(data.manga, mangaId);
     }
     async getChapters(mangaId) {
-      const data = await this.executeGraphQL(`query {
+      const pageUrl = `${MH_DOMAIN}/manga/${encodeURIComponent(mangaId)}`;
+      try {
+        const html = await this.fetchPageHtml(pageUrl);
+        return parseChaptersFromHtml(html, mangaId);
+      } catch (htmlError) {
+        if (/blocked page access|run the cloud icon again/i.test(String(htmlError ?? ""))) {
+          throw htmlError;
+        }
+        const data = await this.executeGraphQL(`query {
                     manga(x: m01, slug: "${escapeGraphQLString(mangaId)}") {
                         title
                         chapters {
@@ -1508,22 +1677,23 @@ var _Sources = (() => {
                         }                  
                     }
                  }`
-      , 2, {
-        "Referer": `${MH_DOMAIN}/manga/${encodeURIComponent(mangaId)}`
+        , 2, {
+          "Referer": pageUrl
+        }
+        );
+        if (!data.manga) throw htmlError;
+        if (data.manga.chapters?.length == 0) throw htmlError;
+        return parseChapters(data.manga.chapters, mangaId);
       }
-      );
-      if (!data.manga) throw new Error(`Failed to parse manga property from data object mangaId:${mangaId}`);
-      if (data.manga.chapters?.length == 0) throw new Error(`Failed to parse chapters property from manga object mangaId:${mangaId}`);
-      return parseChapters(data.manga.chapters, mangaId);
     }
     async getChapterDetails(mangaId, chapterId) {
       const rawChapterId = String(chapterId).trim();
       const chapterNumberMatch = /(\d+(?:\.\d+)?)/.exec(rawChapterId);
       const chapterNumber = Number(chapterNumberMatch?.[1] ?? rawChapterId.replace(/^chapter-/i, ""));
-      const chapterPath = !Number.isNaN(chapterNumber) ? `chapter-${chapterNumber}` : rawChapterId.startsWith("chapter-") ? rawChapterId : `chapter-${rawChapterId}`;
+      const chapterPath = rawChapterId.startsWith("chapter-") ? rawChapterId : !Number.isNaN(chapterNumber) ? `chapter-${chapterNumber}` : `chapter-${rawChapterId}`;
       const chapterUrl = `${MH_DOMAIN}/chapter/${encodeURIComponent(mangaId)}/${chapterPath}`;
       const chapterPageBlocked = (response) => {
-        return [403, 503].includes(response.status) || /Just a moment|Enable JavaScript and cookies to continue|api rate limit excessed|api rate limit exceeded|go to mangahub\.io to continue reading/i.test(String(response.data ?? ""));
+        return isCloudflareBlockedResponse(response) || /api rate limit excessed|api rate limit exceeded|go to mangahub\.io to continue reading/i.test(String(response.data ?? ""));
       };
       let response = await this.requestManager.schedule(App.createRequest({
         url: chapterUrl,
@@ -1817,6 +1987,7 @@ var _Sources = (() => {
         `${MH_DOMAIN}/search`
       ];
       const userAgent = await this.requestManager.getDefaultUserAgent();
+      let sawOpenPage = false;
       for (const url of refreshUrls) {
         try {
           const request = App.createRequest({
@@ -1830,6 +2001,9 @@ var _Sources = (() => {
             }
           });
           const response = await this.requestManager.schedule(request, 1);
+          if (!isCloudflareBlockedResponse(response)) {
+            sawOpenPage = true;
+          }
           const mhubAccess = extractSetCookieHeader(response.headers) || extractMhubAccessFromText(response.data);
           if (mhubAccess) {
             await this.storeMhubAccess(mhubAccess);
@@ -1837,6 +2011,9 @@ var _Sources = (() => {
           }
         } catch (e) {
         }
+      }
+      if (sawOpenPage) {
+        return;
       }
       if (!await this.getMhubAccess()) {
         throw new Error("Mangahub session refresh failed. Open the source and run the cloud icon again.");
