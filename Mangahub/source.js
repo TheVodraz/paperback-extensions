@@ -1188,6 +1188,19 @@ var _Sources = (() => {
     const [, month, day, year] = match;
     return new Date(`${year}-${month}-${day}T00:00:00.000Z`);
   };
+  var extractChapterNumberFromText = (value) => {
+    const source = String(value ?? "");
+    const preferredPatterns = [
+      /#\s*(\d+(?:\.\d+)?)\s*-\s*chapter\b/i,
+      /\bchapter\s+(\d+(?:\.\d+)?)(?!\d)/i,
+      /#\s*(\d+(?:\.\d+)?)(?!\d)/i
+    ];
+    for (const pattern of preferredPatterns) {
+      const match = pattern.exec(source);
+      if (match?.[1]) return Number(match[1]);
+    }
+    return;
+  };
   var parseMangaDetailsFromHtml = (html, mangaId) => {
     const metaTitle = extractMetaContent(html, "og:title").replace(/\s+Manga Online for Free$/i, "").trim();
     const headingTitle = extractHeadingTitle(html);
@@ -1223,19 +1236,23 @@ var _Sources = (() => {
       const chapterPath = decodeURIComponent(match[2] ?? "");
       if (slug != mangaId || !/^chapter-/i.test(chapterPath)) continue;
       const rawText = cleanHtmlText(match[3]);
-      const numberMatch = /chapter-(\d+(?:\.\d+)?)/i.exec(chapterPath) || /#?\s*(\d+(?:\.\d+)?)/.exec(rawText);
-      const chapNum = numberMatch ? Number(numberMatch[1]) : void 0;
+      const textChapNum = extractChapterNumberFromText(rawText);
+      const pathNumberMatch = /chapter-(\d+(?:\.\d+)?)/i.exec(chapterPath);
+      const pathChapNum = pathNumberMatch ? Number(pathNumberMatch[1]) : void 0;
+      const chapNum = Number.isFinite(textChapNum) ? textChapNum : pathChapNum;
+      if (!Number.isFinite(chapNum)) continue;
       const parsedTime = parseDateFromChapterText(rawText);
       let name = rawText.replace(/\b(\d{2}-\d{2}-\d{4}|\d+\s+(?:minute|hour|day|week|month|year)s?\s+ago)\b$/i, "").trim();
       name = name.replace(/^#\s*\d+(?:\.\d+)?\s*-\s*/i, "").trim();
       if (!name || /^start reading$/i.test(name)) {
-        name = chapNum !== void 0 && !Number.isNaN(chapNum) ? `Chapter ${chapNum}` : chapterPath.replace(/^chapter-/i, "Chapter ");
+        name = `Chapter ${chapNum}`;
       }
-      const score = (/chapter|#/i.test(rawText) ? 4 : 0) + (parsedTime ? 2 : 0) + Math.min(rawText.length, 120) / 120;
-      const current = chaptersById.get(chapterPath);
+      const canonicalId = `chapter-${chapNum}`;
+      const score = (/chapter|#/i.test(rawText) ? 4 : 0) + (parsedTime ? 2 : 0) + (pathChapNum === chapNum ? 3 : 0) + Math.min(rawText.length, 120) / 120;
+      const current = chaptersById.get(canonicalId);
       if (!current || score > current.score) {
-        chaptersById.set(chapterPath, {
-          id: chapterPath,
+        chaptersById.set(canonicalId, {
+          id: canonicalId,
           name,
           chapNum,
           time: parsedTime,
@@ -1322,7 +1339,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.13",
+    version: "3.2.14",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1718,29 +1735,6 @@ var _Sources = (() => {
         pages = extractChapterImageUrls(response.data);
         blocked = chapterPageBlocked(response);
       }
-      if (!blocked && !Number.isNaN(chapterNumber) && pages.length <= 10) {
-        try {
-          const data = await this.executeGraphQL(`query {
-                    chapter(x: m01, slug: "${escapeGraphQLString(mangaId)}", number: ${chapterNumber}) {
-                      pages
-                    }
-                  }
-                  `, 2, {
-            "Referer": chapterUrl
-          });
-          if (data.chapter?.pages) {
-            const parsedPages = JSON.parse(data.chapter.pages);
-            const graphqlPages = [];
-            for (const img of parsedPages.i) {
-              graphqlPages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
-            }
-            if (graphqlPages.length > 0) {
-              pages = graphqlPages;
-            }
-          }
-        } catch (e) {
-        }
-      }
       if (pages.length > 0 && pages.length <= 10) {
         pages = await this.expandChapterPagesFromCdNSeed(pages);
       }
@@ -1757,27 +1751,6 @@ var _Sources = (() => {
             mangaId,
             pages
           });
-        }
-        try {
-          const data = await this.executeGraphQL(`query {
-                    chapter(x: m01, slug: "${escapeGraphQLString(mangaId)}", number: ${chapterNumber}) {
-                      pages
-                    }
-                  }
-                  `);
-          if (!data.chapter?.pages) throw new Error(`Failed to parse chapter or pages property from data object mangaId:${mangaId} chapterId:${chapterId}`);
-          const parsedPages = JSON.parse(data.chapter.pages);
-          const graphqlPages = [];
-          for (const img of parsedPages.i) {
-            graphqlPages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
-          }
-          if (graphqlPages.length > pages.length) {
-            pages = graphqlPages;
-          }
-        } catch (e) {
-          if (pages.length == 0) {
-            throw new Error(`${e}`);
-          }
         }
       }
       if (pages.length == 0) {
