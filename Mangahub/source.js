@@ -1403,6 +1403,20 @@ var _Sources = (() => {
     }
     return kept.length > 0 ? kept : pages;
   };
+  var findModeShiftCutoff = (pages, baseline) => {
+    if (pages.length < 10 || baseline <= 0) return;
+    for (let index = 0; index < pages.length - 4; index++) {
+      const currentLength = pages[index]?.contentLength ?? 0;
+      if (!(currentLength > 0 && currentLength < baseline * 0.12)) continue;
+      const following = pages.slice(index + 1, index + 6).map((page) => page.contentLength ?? 0).filter((value) => value > 0);
+      if (following.length < 4) continue;
+      const lowFollowing = following.filter((value) => value < baseline * 0.45).length;
+      if (lowFollowing >= 4) {
+        return index;
+      }
+    }
+    return;
+  };
   var parseSearch = (rows, filters = {}) => {
     const collectedIds = [];
     const searchResults = [];
@@ -1436,7 +1450,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.19",
+    version: "3.2.20",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1718,6 +1732,13 @@ var _Sources = (() => {
         }
       }
       const baseline = getMedian(expandedPages.slice(0, Math.min(6, expandedPages.length)).map((page) => page.contentLength));
+      const modeShiftCutoff = findModeShiftCutoff(expandedPages, baseline);
+      if (modeShiftCutoff !== void 0) {
+        const shiftedPages = expandedPages.slice(0, modeShiftCutoff).map((page) => page.url);
+        if (shiftedPages.length > pages.length) {
+          return shiftedPages;
+        }
+      }
       const outlierTrimmedPages = removeTinyOutlierPages(expandedPages, baseline);
       if (outlierTrimmedPages.length > pages.length && outlierTrimmedPages.length < expandedPages.length) {
         return outlierTrimmedPages.map((page) => page.url);
