@@ -1328,6 +1328,31 @@ var _Sources = (() => {
     if (sorted.length % 2 == 1) return sorted[middle];
     return Math.round((sorted[middle - 1] + sorted[middle]) / 2);
   };
+  var findRepeatedChapterCutoff = (pages) => {
+    if (pages.length < 12) return;
+    const lengths = pages.map((page) => page.contentLength ?? 0);
+    const maxCandidate = Math.floor(lengths.length / 2);
+    const minCandidate = Math.max(6, Math.floor(lengths.length / 3));
+    for (let candidate = maxCandidate; candidate >= minCandidate; candidate--) {
+      if (candidate * 2 > lengths.length) continue;
+      let comparable = 0;
+      let matches = 0;
+      for (let index = 0; index < candidate; index++) {
+        const left = lengths[index];
+        const right = lengths[index + candidate];
+        if (left <= 0 || right <= 0) continue;
+        comparable++;
+        const delta = Math.abs(left - right) / Math.max(left, right);
+        if (delta <= 0.08) {
+          matches++;
+        }
+      }
+      if (comparable >= Math.max(6, Math.floor(candidate * 0.6)) && matches / comparable >= 0.85) {
+        return candidate;
+      }
+    }
+    return;
+  };
   var parseSearch = (rows, filters = {}) => {
     const collectedIds = [];
     const searchResults = [];
@@ -1361,7 +1386,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.2.16",
+    version: "3.2.17",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1635,6 +1660,13 @@ var _Sources = (() => {
         }
       }
       if (expandedPages.length <= pages.length) return pages;
+      const repeatedCutoff = findRepeatedChapterCutoff(expandedPages);
+      if (repeatedCutoff) {
+        const repeatedPages = expandedPages.slice(0, repeatedCutoff).map((page) => page.url);
+        if (repeatedPages.length > pages.length) {
+          return repeatedPages;
+        }
+      }
       const baseline = getMedian(expandedPages.slice(0, Math.min(6, expandedPages.length)).map((page) => page.contentLength));
       if (baseline == 0) {
         return expandedPages.map((page) => page.url);
