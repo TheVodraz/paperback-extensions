@@ -1469,7 +1469,7 @@ var _Sources = (() => {
   var MH_API_DOMAIN = "https://api.mghcdn.com/graphql";
   var MH_CDN_DOMAIN = "https://imgx.mghcdn.com";
   var MangahubInfo = {
-    version: "3.3.0",
+    version: "3.3.1",
     name: "Mangahub",
     icon: "icon.png",
     author: "TheVodraz | Netsky",
@@ -1621,6 +1621,26 @@ var _Sources = (() => {
         throw new Error("Mangahub response did not contain data.");
       }
       return payload.data;
+    }
+    async getGraphQLChapterPages(mangaId, chapterNumber, chapterUrl) {
+      if (Number.isNaN(chapterNumber)) return [];
+      const data = await this.executeGraphQL(`query {
+                    chapter(x: m01, slug: "${escapeGraphQLString(mangaId)}", number: ${chapterNumber}) {
+                      pages
+                    }
+                  }
+                  `, 2, {
+        "Referer": chapterUrl
+      });
+      if (!data.chapter?.pages) {
+        throw new Error(`Failed to parse chapter or pages property from data object mangaId:${mangaId} chapterNumber:${chapterNumber}`);
+      }
+      const parsedPages = JSON.parse(data.chapter.pages);
+      const graphqlPages = [];
+      for (const img of parsedPages.i ?? []) {
+        graphqlPages.push(`${MH_CDN_DOMAIN}/${parsedPages.p}${img}`);
+      }
+      return graphqlPages;
     }
     async fetchPageHtml(url, referer = `${MH_DOMAIN}/`) {
       let response = await this.requestManager.schedule(App.createRequest({
@@ -1901,6 +1921,19 @@ var _Sources = (() => {
       const chapterNumber = Number(chapterNumberMatch?.[1] ?? rawChapterId.replace(/^chapter-/i, ""));
       const chapterPath = rawChapterId.startsWith("chapter-") ? rawChapterId : !Number.isNaN(chapterNumber) ? `chapter-${chapterNumber}` : `chapter-${rawChapterId}`;
       const chapterUrl = `${MH_DOMAIN}/chapter/${encodeURIComponent(mangaId)}/${chapterPath}`;
+      if (!Number.isNaN(chapterNumber)) {
+        try {
+          const graphqlPages = await this.getGraphQLChapterPages(mangaId, chapterNumber, chapterUrl);
+          if (graphqlPages.length > 0) {
+            return App.createChapterDetails({
+              id: chapterId,
+              mangaId,
+              pages: graphqlPages
+            });
+          }
+        } catch (e) {
+        }
+      }
       const chapterPageBlocked = (response) => {
         return isCloudflareBlockedResponse(response) || /api rate limit excessed|api rate limit exceeded|go to mangahub\.io to continue reading/i.test(String(response.data ?? ""));
       };
